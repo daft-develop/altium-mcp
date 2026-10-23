@@ -27,6 +27,8 @@ SCRIPT_DIR = Path(__file__).parent
 
 REQUIREMENTS = [
     "mcp[cli]==1.5.0",
+    # mcp 1.5.0 imports pydantic internals that later pydantic releases removed
+    "pydantic==2.10.6",
     "pillow>=11.1.0",
     "pywin32>=310",
 ]
