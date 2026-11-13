@@ -552,6 +552,26 @@ begin
         Result := 'ERROR: No spec_file provided for create_footprints_batch';
 end;
 
+// Extract the edit footprints batch logic
+function ExecuteEditFootprintsBatch(RequestData: TStringList): String;
+var
+    i: Integer;
+    SpecFile: String;
+begin
+    SpecFile := '';
+
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"spec_file"', RequestData[i]) > 0) then
+            SpecFile := JSONLineValue(RequestData[i]);
+    end;
+
+    if (SpecFile <> '') then
+        Result := EditFootprintsBatch(SpecFile)
+    else
+        Result := 'ERROR: No spec_file provided for edit_footprints_batch';
+end;
+
 // Extract the create symbols batch logic
 function ExecuteCreateSymbolsBatch(RequestData: TStringList): String;
 var
@@ -1160,6 +1180,8 @@ begin
             Result := ExecuteGetFootprintPrimitives(RequestData);
         'create_footprints_batch':
             Result := ExecuteCreateFootprintsBatch(RequestData);
+        'edit_footprints_batch':
+            Result := ExecuteEditFootprintsBatch(RequestData);
         'layout_duplicator':
             Result := GetLayoutDuplicatorComponents(True);            
         'layout_duplicator_apply':

@@ -1445,6 +1445,46 @@ async def create_footprints_batch(ctx: Context, spec_file: str) -> str:
     return json.dumps(result, indent=2) if not isinstance(result, str) else result
 
 @mcp.tool()
+async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
+    """
+    Edit EXISTING PCB footprints in place: delete graphics on a layer and add
+    tracks, arcs and fills. Pads, vias and 3D bodies are never touched, so a
+    footprint keeps its model. (create_footprints_batch only registers new
+    footprints, so it cannot do this.)
+
+    The library is left modified but NOT saved - review it in Altium and save.
+    Reads through get_footprint_primitives see the live, unsaved state.
+
+    Args:
+        spec_file (str): Path to a plain-text spec file, one record per line,
+            applied in order (coords in mils, layers as names, as in
+            create_footprints_batch):
+            FPLIB|<path to .PcbLib>        (opens/focuses the library)
+            EDIT_FOOTPRINT|<name>          (select the footprint to edit)
+            DELETE_LAYER|layer             (delete tracks/arcs/fills/regions/text on layer)
+            TRACK|x1|y1|x2|y2|width|layer
+            ARC|cx|cy|radius|start_angle|end_angle|width|layer
+            FILL|x1|y1|x2|y2|rotation|layer
+
+    Returns:
+        str: JSON with footprints_edited, primitives_deleted, primitives_added,
+             errors and error_messages
+    """
+    logger.info(f"Editing footprints from {spec_file}")
+
+    response = await altium_bridge.execute_command(
+        "edit_footprints_batch",
+        {"spec_file": spec_file}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        return json.dumps({"success": False, "error": f"Failed batch footprint edit: {error_msg}"})
+
+    result = response.get("result", {})
+    return json.dumps(result, indent=2) if not isinstance(result, str) else result
+
+@mcp.tool()
 async def build_schematic(ctx: Context, parts: list, wires: list = None,
                           junctions: list = None, net_labels: list = None,
                           power_ports: list = None, notes: list = None) -> str:

@@ -158,6 +158,7 @@ begin
        (CommandName = 'create_symbols_batch') or
        (CommandName = 'get_footprint_primitives') or
        (CommandName = 'create_footprints_batch') or
+       (CommandName = 'edit_footprints_batch') or
        (CommandName = 'create_pcb_footprint') or
        (CommandName = 'get_project_info') or
        (CommandName = 'get_project_components') or

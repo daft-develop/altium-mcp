@@ -258,6 +258,237 @@ begin
     end;
 end;
 
+// Delete every 2D graphic primitive (track, arc, fill, region, text) on one
+// layer of a library footprint. Pads, vias and 3D bodies are never touched.
+// Returns the number deleted. The iterator is rebuilt after each removal so a
+// removal can never invalidate it; the cap stops a runaway if Altium ever
+// declines to remove an object.
+function DeleteFootprintLayerPrimitives(LibComp: IPCB_LibComponent; LayerName: String): Integer;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+    Lyr     : TLayer;
+    Found   : Boolean;
+begin
+    Result := 0;
+    Lyr := String2Layer(LayerName);
+    repeat
+        Found := False;
+        GrpIter := LibComp.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eFillObject, eRegionObject, eTextObject));
+        Prim := GrpIter.FirstPCBObject;
+        while (Prim <> nil) and (not Found) do
+        begin
+            if (Prim.Layer = Lyr) then
+                Found := True
+            else
+                Prim := GrpIter.NextPCBObject;
+        end;
+        LibComp.GroupIterator_Destroy(GrpIter);
+        if Found then
+        begin
+            LibComp.RemovePCBObject(Prim);
+            Result := Result + 1;
+        end;
+    until (not Found) or (Result >= 5000);
+end;
+
+// Edit existing footprints in place from a spec file (plain text, pipe
+// delimited; coords in mils, layers as names - same conventions as
+// create_footprints_batch):
+//   FPLIB|<path to .PcbLib>               (opens/focuses the library)
+//   EDIT_FOOTPRINT|<name>                 (select the footprint to edit)
+//   DELETE_LAYER|layer                    (delete tracks/arcs/fills/regions/text on layer)
+//   TRACK|x1|y1|x2|y2|width|layer
+//   ARC|cx|cy|radius|start_angle|end_angle|width|layer
+//   FILL|x1|y1|x2|y2|rotation|layer
+// Records apply in file order, so DELETE_LAYER followed by TRACK/ARC replaces a
+// layer's drawing. Pads, vias and 3D bodies are never changed.
+// The library is left modified but NOT saved; the user reviews and saves.
+function EditFootprintsBatch(SpecFilePath: String): String;
+var
+    PcbLib      : IPCB_Library;
+    LibComp     : IPCB_LibComponent;
+    ServerDoc   : IServerDocument;
+    Lines       : TStringList;
+    ErrorArray  : TStringList;
+    ResultProps : TStringList;
+    Track       : IPCB_Track;
+    Arc         : IPCB_Arc;
+    Fill        : IPCB_Fill;
+    Line, Kind  : String;
+    LibPath     : String;
+    FPName      : String;
+    EditedCount : Integer;
+    DeletedCount: Integer;
+    AddedCount  : Integer;
+    ErrorCount  : Integer;
+    i, C        : Integer;
+begin
+    if not FileExists(SpecFilePath) then
+    begin
+        Result := 'ERROR: Spec file not found: ' + SpecFilePath;
+        Exit;
+    end;
+
+    Lines := TStringList.Create;
+    ErrorArray := TStringList.Create;
+    ResultProps := TStringList.Create;
+    LibComp := nil;
+    LibPath := '';
+    EditedCount := 0;
+    DeletedCount := 0;
+    AddedCount := 0;
+    ErrorCount := 0;
+
+    try
+        Lines.LoadFromFile(SpecFilePath);
+        PCBServer.PreProcess;
+
+        for i := 0 to Lines.Count - 1 do
+        begin
+            Line := Lines[i];
+            Kind := UpperCase(Trim(GetFieldFromPipeString(Line, 0)));
+            if (Kind = '') then Continue;
+
+            try
+                if (Kind = 'FPLIB') then
+                begin
+                    LibPath := GetFieldFromPipeString(Line, 1);
+                    if (LibPath = '') or (not FileExists(LibPath)) then
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': library not found"');
+                        LibPath := '';
+                    end
+                    else
+                    begin
+                        // Never re-open an open document (reload discards unsaved changes)
+                        ServerDoc := OpenLibraryDocument('PcbLib', LibPath);
+                        if (ServerDoc = nil) then
+                        begin
+                            ErrorCount := ErrorCount + 1;
+                            ErrorArray.Add('"line ' + IntToStr(i + 1) + ': could not open library"');
+                        end;
+                    end;
+                end
+                else if (Kind = 'EDIT_FOOTPRINT') then
+                begin
+                    LibComp := nil;
+                    FPName := Trim(GetFieldFromPipeString(Line, 1));
+                    PcbLib := GetPcbLibSafe(0);
+                    if (PcbLib <> nil) then
+                    begin
+                        for C := 0 to PcbLib.ComponentCount - 1 do
+                            if (UpperCase(PcbLib.GetComponent(C).Name) = UpperCase(FPName)) then
+                                LibComp := PcbLib.GetComponent(C);
+                    end;
+                    if (LibComp = nil) then
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"footprint not found: ' + JSONEscapeString(FPName) + '"');
+                    end
+                    else
+                    begin
+                        // The footprint shown in the editor is exposed in board
+                        // coordinates (offset by the board origin) and edits to it
+                        // do not reach the stored component. Move the editor to a
+                        // different footprint first so LibComp is edited in its own
+                        // coordinates; never make the edited footprint current.
+                        if (PcbLib.CurrentComponent <> nil) then
+                            if (UpperCase(PcbLib.CurrentComponent.Name) = UpperCase(LibComp.Name)) then
+                                for C := 0 to PcbLib.ComponentCount - 1 do
+                                    if (UpperCase(PcbLib.GetComponent(C).Name) <> UpperCase(LibComp.Name)) then
+                                    begin
+                                        PcbLib.CurrentComponent := PcbLib.GetComponent(C);
+                                        Break;
+                                    end;
+                        EditedCount := EditedCount + 1;
+                    end;
+                end
+                else if (LibComp = nil) then
+                begin
+                    // A primitive record with no footprint selected must not be silently dropped
+                    ErrorCount := ErrorCount + 1;
+                    ErrorArray.Add('"line ' + IntToStr(i + 1) + ': ' + JSONEscapeString(Kind) + ' skipped, no footprint selected"');
+                end
+                else if (Kind = 'DELETE_LAYER') then
+                begin
+                    DeletedCount := DeletedCount + DeleteFootprintLayerPrimitives(LibComp, Trim(GetFieldFromPipeString(Line, 1)));
+                end
+                else if (Kind = 'TRACK') then
+                begin
+                    Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+                    Track.x1 := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))));
+                    Track.y1 := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))));
+                    Track.x2 := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))));
+                    Track.y2 := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))));
+                    Track.Width := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5))));
+                    Track.Layer := String2Layer(Trim(GetFieldFromPipeString(Line, 6)));
+                    LibComp.AddPCBObject(Track);
+                    PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                    AddedCount := AddedCount + 1;
+                end
+                else if (Kind = 'ARC') then
+                begin
+                    Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
+                    Arc.XCenter := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))));
+                    Arc.YCenter := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))));
+                    Arc.Radius := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))));
+                    Arc.StartAngle := SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4)));
+                    Arc.EndAngle := SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5)));
+                    Arc.LineWidth := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 6))));
+                    Arc.Layer := String2Layer(Trim(GetFieldFromPipeString(Line, 7)));
+                    LibComp.AddPCBObject(Arc);
+                    PCBServer.SendMessageToRobots(Arc.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                    AddedCount := AddedCount + 1;
+                end
+                else if (Kind = 'FILL') then
+                begin
+                    Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
+                    Fill.x1Location := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))));
+                    Fill.y1Location := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))));
+                    Fill.x2Location := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))));
+                    Fill.y2Location := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))));
+                    Fill.Rotation := SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5)));
+                    Fill.Layer := String2Layer(Trim(GetFieldFromPipeString(Line, 6)));
+                    LibComp.AddPCBObject(Fill);
+                    PCBServer.SendMessageToRobots(Fill.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                    AddedCount := AddedCount + 1;
+                end
+                else
+                begin
+                    ErrorCount := ErrorCount + 1;
+                    ErrorArray.Add('"line ' + IntToStr(i + 1) + ': unknown record ' + JSONEscapeString(Kind) + '"');
+                end;
+            except
+                ErrorCount := ErrorCount + 1;
+                ErrorArray.Add('"line ' + IntToStr(i + 1) + ': ' + JSONEscapeString(Kind) + ' raised an error"');
+            end;
+        end;
+
+        PCBServer.PostProcess;
+
+        if (LibPath <> '') then
+            MarkDocumentModified(LibPath);
+
+        AddJSONInteger(ResultProps, 'footprints_edited', EditedCount);
+        AddJSONInteger(ResultProps, 'primitives_deleted', DeletedCount);
+        AddJSONInteger(ResultProps, 'primitives_added', AddedCount);
+        AddJSONInteger(ResultProps, 'errors', ErrorCount);
+        if (ErrorArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(ErrorArray, 'error_messages'))
+        else
+            ResultProps.Add('"error_messages": []');
+
+        Result := BuildJSONObject(ResultProps);
+    finally
+        Lines.Free;
+        ErrorArray.Free;
+        ResultProps.Free;
+    end;
+end;
+
 // Get the graphic/copper primitives of footprints in a PCB library.
 // FootprintName = '' -> inventory (per-footprint primitive counts);
 // '*' -> full dump of every footprint; name -> dump that footprint.
