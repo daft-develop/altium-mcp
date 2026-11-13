@@ -36,6 +36,7 @@ var
     Lines       : TStringList;
     FailedArray : TStringList;
     ResultProps : TStringList;
+    Touched     : TStringList;
     Pad         : IPCB_Pad;
     Track       : IPCB_Track;
     Arc         : IPCB_Arc;
@@ -62,6 +63,7 @@ begin
     Lines := TStringList.Create;
     FailedArray := TStringList.Create;
     ResultProps := TStringList.Create;
+    Touched := TStringList.Create;
     LibComp := nil;
     CreatedCount := 0;
     PrimErrors := 0;
@@ -88,6 +90,8 @@ begin
                         begin
                             Client.ShowDocument(ServerDoc);
                             Sleep(500);
+                            // Remember every library of the batch so each is flagged unsaved
+                            Touched.Add(LibPath);
                         end;
                     end;
                 end
@@ -243,6 +247,12 @@ begin
             end;
         end;
 
+        for i := 0 to Touched.Count - 1 do
+            MarkDocumentModified(Touched[i]);
+        // No FPLIB line: the footprints went into the focused library
+        if (Touched.Count = 0) and (CreatedCount > 0) then
+            MarkDocumentModified(PcbLib.Board.FileName);
+
         AddJSONInteger(ResultProps, 'created', CreatedCount);
         AddJSONInteger(ResultProps, 'primitive_errors', PrimErrors);
         if (FailedArray.Count > 0) then
@@ -255,6 +265,7 @@ begin
         Lines.Free;
         FailedArray.Free;
         ResultProps.Free;
+        Touched.Free;
     end;
 end;
 
@@ -425,6 +436,7 @@ var
     Lines       : TStringList;
     ErrorArray  : TStringList;
     ResultProps : TStringList;
+    Touched     : TStringList;
     Track       : IPCB_Track;
     Arc         : IPCB_Arc;
     Fill        : IPCB_Fill;
@@ -448,6 +460,7 @@ begin
     Lines := TStringList.Create;
     ErrorArray := TStringList.Create;
     ResultProps := TStringList.Create;
+    Touched := TStringList.Create;
     LibComp := nil;
     LibPath := '';
     Aborted := False;
@@ -488,7 +501,11 @@ begin
                             ErrorCount := ErrorCount + 1;
                             ErrorArray.Add('"line ' + IntToStr(i + 1) + ': could not open library, batch aborted"');
                             Aborted := True;
-                        end;
+                        end
+                        else
+                            // A batch may span several libraries: remember each one so all
+                            // of them are flagged unsaved, not just the last
+                            Touched.Add(LibPath);
                     end;
                 end
                 else if (Kind = 'EDIT_FOOTPRINT') then
@@ -649,8 +666,8 @@ begin
 
         PCBServer.PostProcess;
 
-        if (LibPath <> '') then
-            MarkDocumentModified(LibPath);
+        for i := 0 to Touched.Count - 1 do
+            MarkDocumentModified(Touched[i]);
 
         AddJSONInteger(ResultProps, 'footprints_edited', EditedCount);
         AddJSONInteger(ResultProps, 'primitives_deleted', DeletedCount);
@@ -666,6 +683,7 @@ begin
         Lines.Free;
         ErrorArray.Free;
         ResultProps.Free;
+        Touched.Free;
     end;
 end;
 
@@ -2421,6 +2439,9 @@ begin
         PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, LibComp.I_ObjectAddress);
         PcbLib.CurrentComponent := LibComp;
         PcbLib.Board.ViewManager_FullUpdate;
+
+        // Flag the focused library unsaved (a script-added component does not set it)
+        MarkDocumentModified(PcbLib.Board.FileName);
 
         AddJSONBoolean(ResultProps, 'success', True);
         AddJSONProperty(ResultProps, 'footprint_name', FootprintName);
