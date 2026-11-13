@@ -1448,8 +1448,8 @@ async def create_footprints_batch(ctx: Context, spec_file: str) -> str:
 async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
     """
     Edit EXISTING PCB footprints in place: delete graphics on a layer or one
-    matching track/arc/text, and add tracks, arcs, fills and text. Pads, vias and 3D bodies are never touched, so a
-    footprint keeps its model. (create_footprints_batch only registers new
+    matching track/arc/text, delete or resize individual pads, and add tracks, arcs, fills and text. 3D bodies are never touched, so a
+    footprint keeps its model; other pads are left alone. (create_footprints_batch only registers new
     footprints, so it cannot do this.)
 
     The library is left modified but NOT saved - review it in Altium and save.
@@ -1465,6 +1465,8 @@ async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
             DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
             DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
             DELETE_TEXT|x|y|text|layer            (delete ONE matching text)
+            DELETE_PAD|name|x|y                   (delete ONE pad by name and position)
+            RESIZE_PAD|name|x|y|size_x|size_y     (set ONE pad's copper size; hole/shape/mask kept)
             TEXT|x|y|size|width|rotation|layer|mirror|ttf|text
             TRACK|x1|y1|x2|y2|width|layer
             ARC|cx|cy|radius|start_angle|end_angle|width|layer
@@ -1472,7 +1474,7 @@ async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
 
     Returns:
         str: JSON with footprints_edited, primitives_deleted, primitives_added,
-             errors and error_messages
+             pads_resized, errors and error_messages
     """
     logger.info(f"Editing footprints from {spec_file}")
 

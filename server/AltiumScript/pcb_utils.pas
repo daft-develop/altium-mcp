@@ -412,6 +412,76 @@ begin
     end;
 end;
 
+// Find ONE pad by name and position (mils, matched to 0.1 mil). Returns nil if
+// none matches. The iterator is destroyed before returning; the caller must
+// use the pad before modifying the footprint's primitive list.
+function FindFootprintPad(LibComp: IPCB_LibComponent; PadName: String; X, Y: Double): IPCB_Primitive;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+begin
+    Result := nil;
+    GrpIter := LibComp.GroupIterator_Create;
+    GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+    Prim := GrpIter.FirstPCBObject;
+    while (Prim <> nil) and (Result = nil) do
+    begin
+        if (Prim.Name = PadName) and (Abs(CoordToMils(Prim.x) - X) < 0.1) and
+           (Abs(CoordToMils(Prim.y) - Y) < 0.1) then
+            Result := Prim
+        else
+            Prim := GrpIter.NextPCBObject;
+    end;
+    LibComp.GroupIterator_Destroy(GrpIter);
+end;
+
+// Delete ONE pad (any pad, plated hole included) by name and position in mils.
+// Returns 1 if deleted, 0 if nothing matched.
+function DeleteFootprintPad(LibComp: IPCB_LibComponent; PadName: String; X, Y: Double): Integer;
+var
+    Prim : IPCB_Primitive;
+begin
+    Result := 0;
+    Prim := FindFootprintPad(LibComp, PadName, X, Y);
+    if (Prim <> nil) then
+    begin
+        LibComp.RemovePCBObject(Prim);
+        Result := 1;
+    end;
+end;
+
+// Resize ONE pad's copper (top size; mid/bottom too when the pad is not a simple
+// stack and those sizes still equal the old top size). Name and position in
+// mils, new size in mils. Hole, shape, mask and paste are not touched.
+// Returns 1 if resized, 0 if nothing matched.
+function ResizeFootprintPad(LibComp: IPCB_LibComponent; PadName: String; X, Y, SX, SY: Double): Integer;
+var
+    Prim : IPCB_Primitive;
+    OldX, OldY : TCoord;
+begin
+    Result := 0;
+    Prim := FindFootprintPad(LibComp, PadName, X, Y);
+    if (Prim = nil) then Exit;
+    OldX := Prim.TopXSize;
+    OldY := Prim.TopYSize;
+    if (Prim.Mode <> ePadMode_Simple) then
+    begin
+        if (Prim.MidXSize = OldX) and (Prim.MidYSize = OldY) then
+        begin
+            Prim.MidXSize := MilsToCoord(SX);
+            Prim.MidYSize := MilsToCoord(SY);
+        end;
+        if (Prim.BotXSize = OldX) and (Prim.BotYSize = OldY) then
+        begin
+            Prim.BotXSize := MilsToCoord(SX);
+            Prim.BotYSize := MilsToCoord(SY);
+        end;
+    end;
+    Prim.TopXSize := MilsToCoord(SX);
+    Prim.TopYSize := MilsToCoord(SY);
+    Result := 1;
+end;
+
 // Edit existing footprints in place from a spec file (plain text, pipe
 // delimited; coords in mils, layers as names - same conventions as
 // create_footprints_batch):
@@ -421,12 +491,14 @@ end;
 //   DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
 //   DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
 //   DELETE_TEXT|x|y|text|layer            (delete ONE matching text)
+//   DELETE_PAD|name|x|y                   (delete ONE pad by name and position)
+//   RESIZE_PAD|name|x|y|size_x|size_y     (set ONE pad's copper size; hole/shape/mask kept)
 //   TEXT|x|y|size|width|rotation|layer|mirror|ttf|text
 //   TRACK|x1|y1|x2|y2|width|layer
 //   ARC|cx|cy|radius|start_angle|end_angle|width|layer
 //   FILL|x1|y1|x2|y2|rotation|layer
 // Records apply in file order, so DELETE_LAYER followed by TRACK/ARC replaces a
-// layer's drawing. Pads, vias and 3D bodies are never changed.
+// layer's drawing. Pads, vias and 3D bodies are otherwise never changed.
 // The library is left modified but NOT saved; the user reviews and saves.
 function EditFootprintsBatch(SpecFilePath: String): String;
 var
@@ -447,6 +519,7 @@ var
     EditedCount : Integer;
     DeletedCount: Integer;
     AddedCount  : Integer;
+    ResizedCount: Integer;
     ErrorCount  : Integer;
     i, C        : Integer;
     Aborted     : Boolean;
@@ -467,6 +540,7 @@ begin
     EditedCount := 0;
     DeletedCount := 0;
     AddedCount := 0;
+    ResizedCount := 0;
     ErrorCount := 0;
 
     try
@@ -551,6 +625,32 @@ begin
                 else if (Kind = 'DELETE_LAYER') then
                 begin
                     DeletedCount := DeletedCount + DeleteFootprintLayerPrimitives(LibComp, Trim(GetFieldFromPipeString(Line, 1)));
+                end
+                else if (Kind = 'DELETE_PAD') then
+                begin
+                    if (DeleteFootprintPad(LibComp, GetFieldFromPipeString(Line, 1),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3)))) = 1) then
+                        DeletedCount := DeletedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_PAD matched nothing"');
+                    end;
+                end
+                else if (Kind = 'RESIZE_PAD') then
+                begin
+                    if (ResizeFootprintPad(LibComp, GetFieldFromPipeString(Line, 1),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5)))) = 1) then
+                        ResizedCount := ResizedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': RESIZE_PAD matched nothing"');
+                    end;
                 end
                 else if (Kind = 'DELETE_TEXT') then
                 begin
@@ -672,6 +772,7 @@ begin
         AddJSONInteger(ResultProps, 'footprints_edited', EditedCount);
         AddJSONInteger(ResultProps, 'primitives_deleted', DeletedCount);
         AddJSONInteger(ResultProps, 'primitives_added', AddedCount);
+        AddJSONInteger(ResultProps, 'pads_resized', ResizedCount);
         AddJSONInteger(ResultProps, 'errors', ErrorCount);
         if (ErrorArray.Count > 0) then
             ResultProps.Add(BuildJSONArray(ErrorArray, 'error_messages'))
