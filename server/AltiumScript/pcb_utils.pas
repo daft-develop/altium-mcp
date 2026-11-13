@@ -293,12 +293,90 @@ begin
     until (not Found) or (Result >= 5000);
 end;
 
+// Delete ONE track that matches the given geometry (either direction), width
+// and layer. Coordinates and width are in mils; matched to 0.05 mil. Returns 1
+// if a track was deleted, 0 if nothing matched. Used to replace a single
+// primitive without disturbing the rest of the layer (text, regions, ...).
+function DeleteFootprintTrack(LibComp: IPCB_LibComponent; X1, Y1, X2, Y2, W: Double; LayerName: String): Integer;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+    Lyr     : TLayer;
+    Found   : Boolean;
+    Same    : Boolean;
+    Swapped : Boolean;
+begin
+    Result := 0;
+    Found := False;
+    Lyr := String2Layer(LayerName);
+    GrpIter := LibComp.GroupIterator_Create;
+    GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+    Prim := GrpIter.FirstPCBObject;
+    while (Prim <> nil) and (not Found) do
+    begin
+        Same := False;
+        Swapped := False;
+        if (Prim.Layer = Lyr) and (Abs(CoordToMils(Prim.Width) - W) < 0.05) then
+        begin
+            Same := (Abs(CoordToMils(Prim.x1) - X1) < 0.05) and (Abs(CoordToMils(Prim.y1) - Y1) < 0.05) and
+                    (Abs(CoordToMils(Prim.x2) - X2) < 0.05) and (Abs(CoordToMils(Prim.y2) - Y2) < 0.05);
+            Swapped := (Abs(CoordToMils(Prim.x1) - X2) < 0.05) and (Abs(CoordToMils(Prim.y1) - Y2) < 0.05) and
+                       (Abs(CoordToMils(Prim.x2) - X1) < 0.05) and (Abs(CoordToMils(Prim.y2) - Y1) < 0.05);
+        end;
+        if Same or Swapped then
+            Found := True
+        else
+            Prim := GrpIter.NextPCBObject;
+    end;
+    LibComp.GroupIterator_Destroy(GrpIter);
+    if Found then
+    begin
+        LibComp.RemovePCBObject(Prim);
+        Result := 1;
+    end;
+end;
+
+// Delete ONE arc that matches the centre, radius, width and layer (all mils,
+// matched to 0.05 mil; start/end angle are not compared). Returns 1 if an arc
+// was deleted, 0 if nothing matched. Two identical arcs need two calls.
+function DeleteFootprintArc(LibComp: IPCB_LibComponent; CX, CY, R, W: Double; LayerName: String): Integer;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+    Lyr     : TLayer;
+    Found   : Boolean;
+begin
+    Result := 0;
+    Found := False;
+    Lyr := String2Layer(LayerName);
+    GrpIter := LibComp.GroupIterator_Create;
+    GrpIter.AddFilter_ObjectSet(MkSet(eArcObject));
+    Prim := GrpIter.FirstPCBObject;
+    while (Prim <> nil) and (not Found) do
+    begin
+        if (Prim.Layer = Lyr) and (Abs(CoordToMils(Prim.LineWidth) - W) < 0.05) and
+           (Abs(CoordToMils(Prim.Radius) - R) < 0.05) and
+           (Abs(CoordToMils(Prim.XCenter) - CX) < 0.05) and (Abs(CoordToMils(Prim.YCenter) - CY) < 0.05) then
+            Found := True
+        else
+            Prim := GrpIter.NextPCBObject;
+    end;
+    LibComp.GroupIterator_Destroy(GrpIter);
+    if Found then
+    begin
+        LibComp.RemovePCBObject(Prim);
+        Result := 1;
+    end;
+end;
+
 // Edit existing footprints in place from a spec file (plain text, pipe
 // delimited; coords in mils, layers as names - same conventions as
 // create_footprints_batch):
 //   FPLIB|<path to .PcbLib>               (opens/focuses the library)
 //   EDIT_FOOTPRINT|<name>                 (select the footprint to edit)
 //   DELETE_LAYER|layer                    (delete tracks/arcs/fills/regions/text on layer)
+//   DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
+//   DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
 //   TRACK|x1|y1|x2|y2|width|layer
 //   ARC|cx|cy|radius|start_angle|end_angle|width|layer
 //   FILL|x1|y1|x2|y2|rotation|layer
@@ -324,6 +402,7 @@ var
     AddedCount  : Integer;
     ErrorCount  : Integer;
     i, C        : Integer;
+    Aborted     : Boolean;
 begin
     if not FileExists(SpecFilePath) then
     begin
@@ -336,6 +415,7 @@ begin
     ResultProps := TStringList.Create;
     LibComp := nil;
     LibPath := '';
+    Aborted := False;
     EditedCount := 0;
     DeletedCount := 0;
     AddedCount := 0;
@@ -350,6 +430,8 @@ begin
             Line := Lines[i];
             Kind := UpperCase(Trim(GetFieldFromPipeString(Line, 0)));
             if (Kind = '') then Continue;
+            // After a failed FPLIB nothing else may run: the focused library is not the one asked for
+            if Aborted then Continue;
 
             try
                 if (Kind = 'FPLIB') then
@@ -358,8 +440,9 @@ begin
                     if (LibPath = '') or (not FileExists(LibPath)) then
                     begin
                         ErrorCount := ErrorCount + 1;
-                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': library not found"');
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': library not found, batch aborted"');
                         LibPath := '';
+                        Aborted := True;
                     end
                     else
                     begin
@@ -368,7 +451,8 @@ begin
                         if (ServerDoc = nil) then
                         begin
                             ErrorCount := ErrorCount + 1;
-                            ErrorArray.Add('"line ' + IntToStr(i + 1) + ': could not open library"');
+                            ErrorArray.Add('"line ' + IntToStr(i + 1) + ': could not open library, batch aborted"');
+                            Aborted := True;
                         end;
                     end;
                 end
@@ -415,6 +499,37 @@ begin
                 else if (Kind = 'DELETE_LAYER') then
                 begin
                     DeletedCount := DeletedCount + DeleteFootprintLayerPrimitives(LibComp, Trim(GetFieldFromPipeString(Line, 1)));
+                end
+                else if (Kind = 'DELETE_TRACK') then
+                begin
+                    if (DeleteFootprintTrack(LibComp,
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5))),
+                            Trim(GetFieldFromPipeString(Line, 6))) = 1) then
+                        DeletedCount := DeletedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_TRACK matched nothing"');
+                    end;
+                end
+                else if (Kind = 'DELETE_ARC') then
+                begin
+                    if (DeleteFootprintArc(LibComp,
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))),
+                            Trim(GetFieldFromPipeString(Line, 5))) = 1) then
+                        DeletedCount := DeletedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_ARC matched nothing"');
+                    end;
                 end
                 else if (Kind = 'TRACK') then
                 begin

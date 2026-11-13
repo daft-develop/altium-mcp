@@ -1447,8 +1447,8 @@ async def create_footprints_batch(ctx: Context, spec_file: str) -> str:
 @mcp.tool()
 async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
     """
-    Edit EXISTING PCB footprints in place: delete graphics on a layer and add
-    tracks, arcs and fills. Pads, vias and 3D bodies are never touched, so a
+    Edit EXISTING PCB footprints in place: delete graphics on a layer or one
+    matching track/arc, and add tracks, arcs and fills. Pads, vias and 3D bodies are never touched, so a
     footprint keeps its model. (create_footprints_batch only registers new
     footprints, so it cannot do this.)
 
@@ -1462,6 +1462,8 @@ async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
             FPLIB|<path to .PcbLib>        (opens/focuses the library)
             EDIT_FOOTPRINT|<name>          (select the footprint to edit)
             DELETE_LAYER|layer             (delete tracks/arcs/fills/regions/text on layer)
+            DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
+            DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
             TRACK|x1|y1|x2|y2|width|layer
             ARC|cx|cy|radius|start_angle|end_angle|width|layer
             FILL|x1|y1|x2|y2|rotation|layer
