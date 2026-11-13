@@ -369,6 +369,38 @@ begin
     end;
 end;
 
+// Delete ONE text primitive that matches the given location (mils, matched to
+// 0.05 mil), string and layer. Returns 1 if a text was deleted, 0 if nothing
+// matched. Two identical texts need two calls.
+function DeleteFootprintText(LibComp: IPCB_LibComponent; X, Y: Double; TextStr, LayerName: String): Integer;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+    Lyr     : TLayer;
+    Found   : Boolean;
+begin
+    Result := 0;
+    Found := False;
+    Lyr := String2Layer(LayerName);
+    GrpIter := LibComp.GroupIterator_Create;
+    GrpIter.AddFilter_ObjectSet(MkSet(eTextObject));
+    Prim := GrpIter.FirstPCBObject;
+    while (Prim <> nil) and (not Found) do
+    begin
+        if (Prim.Layer = Lyr) and (Prim.Text = TextStr) and
+           (Abs(CoordToMils(Prim.XLocation) - X) < 0.05) and (Abs(CoordToMils(Prim.YLocation) - Y) < 0.05) then
+            Found := True
+        else
+            Prim := GrpIter.NextPCBObject;
+    end;
+    LibComp.GroupIterator_Destroy(GrpIter);
+    if Found then
+    begin
+        LibComp.RemovePCBObject(Prim);
+        Result := 1;
+    end;
+end;
+
 // Edit existing footprints in place from a spec file (plain text, pipe
 // delimited; coords in mils, layers as names - same conventions as
 // create_footprints_batch):
@@ -377,6 +409,8 @@ end;
 //   DELETE_LAYER|layer                    (delete tracks/arcs/fills/regions/text on layer)
 //   DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
 //   DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
+//   DELETE_TEXT|x|y|text|layer            (delete ONE matching text)
+//   TEXT|x|y|size|width|rotation|layer|mirror|ttf|text
 //   TRACK|x1|y1|x2|y2|width|layer
 //   ARC|cx|cy|radius|start_angle|end_angle|width|layer
 //   FILL|x1|y1|x2|y2|rotation|layer
@@ -394,6 +428,7 @@ var
     Track       : IPCB_Track;
     Arc         : IPCB_Arc;
     Fill        : IPCB_Fill;
+    Text        : IPCB_Text;
     Line, Kind  : String;
     LibPath     : String;
     FPName      : String;
@@ -499,6 +534,36 @@ begin
                 else if (Kind = 'DELETE_LAYER') then
                 begin
                     DeletedCount := DeletedCount + DeleteFootprintLayerPrimitives(LibComp, Trim(GetFieldFromPipeString(Line, 1)));
+                end
+                else if (Kind = 'DELETE_TEXT') then
+                begin
+                    if (DeleteFootprintText(LibComp,
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))),
+                            GetFieldFromPipeString(Line, 3),
+                            Trim(GetFieldFromPipeString(Line, 4))) = 1) then
+                        DeletedCount := DeletedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_TEXT matched nothing"');
+                    end;
+                end
+                else if (Kind = 'TEXT') then
+                begin
+                    Text := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+                    Text.XLocation := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))));
+                    Text.YLocation := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2))));
+                    Text.Size := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 3))));
+                    Text.Width := MilsToCoord(SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 4))));
+                    Text.Layer := String2Layer(Trim(GetFieldFromPipeString(Line, 6)));
+                    Text.MirrorFlag := (Trim(GetFieldFromPipeString(Line, 7)) = '1');
+                    Text.UseTTFonts := (Trim(GetFieldFromPipeString(Line, 8)) = '1');
+                    Text.Text := StringReplace(GetFieldFromPipeString(Line, 9), '<NL>', #13#10, REPLACEALL);
+                    Text.Rotation := SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 5)));
+                    LibComp.AddPCBObject(Text);
+                    PCBServer.SendMessageToRobots(Text.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                    AddedCount := AddedCount + 1;
                 end
                 else if (Kind = 'DELETE_TRACK') then
                 begin
