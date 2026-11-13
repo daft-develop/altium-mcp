@@ -1465,7 +1465,10 @@ async def edit_footprints_batch(ctx: Context, spec_file: str) -> str:
             DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
             DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
             DELETE_TEXT|x|y|text|layer            (delete ONE matching text)
+            APPEND_DESCRIPTION|text               (add a new line to the footprint description;
+                                                   skipped if the text is already there)
             DELETE_PAD|name|x|y                   (delete ONE pad by name and position)
+            DELETE_VIA|x|y                        (delete ONE via primitive by position)
             RESIZE_PAD|name|x|y|size_x|size_y     (set ONE pad's copper size; hole/shape/mask kept)
             TEXT|x|y|size|width|rotation|layer|mirror|ttf|text
             TRACK|x1|y1|x2|y2|width|layer

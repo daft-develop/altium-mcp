@@ -450,6 +450,34 @@ begin
     end;
 end;
 
+// Delete ONE via primitive by position in mils (matched to 0.1 mil). Returns 1
+// if deleted, 0 if nothing matched. Vias are separate objects from plated-hole pads.
+function DeleteFootprintVia(LibComp: IPCB_LibComponent; X, Y: Double): Integer;
+var
+    GrpIter : IPCB_GroupIterator;
+    Prim    : IPCB_Primitive;
+    Found   : Boolean;
+begin
+    Result := 0;
+    Found := False;
+    GrpIter := LibComp.GroupIterator_Create;
+    GrpIter.AddFilter_ObjectSet(MkSet(eViaObject));
+    Prim := GrpIter.FirstPCBObject;
+    while (Prim <> nil) and (not Found) do
+    begin
+        if (Abs(CoordToMils(Prim.x) - X) < 0.1) and (Abs(CoordToMils(Prim.y) - Y) < 0.1) then
+            Found := True
+        else
+            Prim := GrpIter.NextPCBObject;
+    end;
+    LibComp.GroupIterator_Destroy(GrpIter);
+    if Found then
+    begin
+        LibComp.RemovePCBObject(Prim);
+        Result := 1;
+    end;
+end;
+
 // Resize ONE pad's copper (top size; mid/bottom too when the pad is not a simple
 // stack and those sizes still equal the old top size). Name and position in
 // mils, new size in mils. Hole, shape, mask and paste are not touched.
@@ -491,7 +519,9 @@ end;
 //   DELETE_TRACK|x1|y1|x2|y2|width|layer  (delete ONE matching track, either direction)
 //   DELETE_ARC|cx|cy|radius|width|layer   (delete ONE matching arc; angles not compared)
 //   DELETE_TEXT|x|y|text|layer            (delete ONE matching text)
+//   APPEND_DESCRIPTION|text               (add a new line to the footprint description)
 //   DELETE_PAD|name|x|y                   (delete ONE pad by name and position)
+//   DELETE_VIA|x|y                        (delete ONE via primitive by position)
 //   RESIZE_PAD|name|x|y|size_x|size_y     (set ONE pad's copper size; hole/shape/mask kept)
 //   TEXT|x|y|size|width|rotation|layer|mirror|ttf|text
 //   TRACK|x1|y1|x2|y2|width|layer
@@ -516,6 +546,7 @@ var
     Line, Kind  : String;
     LibPath     : String;
     FPName      : String;
+    FieldText   : String;
     EditedCount : Integer;
     DeletedCount: Integer;
     AddedCount  : Integer;
@@ -626,6 +657,19 @@ begin
                 begin
                     DeletedCount := DeletedCount + DeleteFootprintLayerPrimitives(LibComp, Trim(GetFieldFromPipeString(Line, 1)));
                 end
+                else if (Kind = 'APPEND_DESCRIPTION') then
+                begin
+                    // Skip when the line is already the last one, so a re-run does not stack copies
+                    FieldText := GetFieldFromPipeString(Line, 1);
+                    if (Pos(FieldText, LibComp.Description) = 0) then
+                    begin
+                        if (LibComp.Description = '') then
+                            LibComp.Description := FieldText
+                        else
+                            LibComp.Description := LibComp.Description + #13#10 + FieldText;
+                    end;
+                    AddedCount := AddedCount + 1;
+                end
                 else if (Kind = 'DELETE_PAD') then
                 begin
                     if (DeleteFootprintPad(LibComp, GetFieldFromPipeString(Line, 1),
@@ -636,6 +680,18 @@ begin
                     begin
                         ErrorCount := ErrorCount + 1;
                         ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_PAD matched nothing"');
+                    end;
+                end
+                else if (Kind = 'DELETE_VIA') then
+                begin
+                    if (DeleteFootprintVia(LibComp,
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 1))),
+                            SafeStrToFloat(Trim(GetFieldFromPipeString(Line, 2)))) = 1) then
+                        DeletedCount := DeletedCount + 1
+                    else
+                    begin
+                        ErrorCount := ErrorCount + 1;
+                        ErrorArray.Add('"line ' + IntToStr(i + 1) + ': DELETE_VIA matched nothing"');
                     end;
                 end
                 else if (Kind = 'RESIZE_PAD') then
