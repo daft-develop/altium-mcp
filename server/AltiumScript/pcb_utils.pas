@@ -1937,10 +1937,12 @@ function GetPCBRules(ROOT_DIR: String): String;
 Var
     Board         : IPCB_Board;
     Rule          : IPCB_Rule;
+    RuleDisp      : IDispatch;
     BoardIterator : IPCB_BoardIterator;
     RulesArray    : TStringList;
     RuleProps     : TStringList;
     OutputLines   : TStringList;
+    RuleKindText  : String;
 begin
     // Retrieve the current board
     Board := GetBoardSafe(0);
@@ -1968,10 +1970,26 @@ begin
             RuleProps := TStringList.Create;
             try
                 // Add rule descriptor
+                RuleKindText := Rule.GetState_ShortDescriptorString;
+                AddJSONProperty(RuleProps, 'name', Rule.Name);
+                AddJSONProperty(RuleProps, 'unique_id', Rule.UniqueId);
                 AddJSONProperty(RuleProps, 'descriptor', Rule.Descriptor);
-                AddJSONProperty(RuleProps, 'rule_kind', Rule.GetState_ShortDescriptorString);
+                AddJSONProperty(RuleProps, 'rule_kind', RuleKindText);
+                AddJSONInteger(RuleProps, 'rule_kind_id', Rule.RuleKind);
                 AddJSONProperty(RuleProps, 'filter1', Rule.Scope1Expression);
                 AddJSONProperty(RuleProps, 'filter2', Rule.Scope2Expression);
+
+                // The newer matrix-style Board Outline Clearance rule keeps a
+                // single generic clearance in Gap, but its Descriptor still
+                // prints the legacy "Gap=0mm" text. Report the real value.
+                // Gap is not on IPCB_Rule, so read it late-bound. The
+                // per-object matrix (arc/track/pad/... by edge type) has no
+                // scripting property and is not reported.
+                if (RuleKindText = 'Board Outline Clearance') then
+                begin
+                    RuleDisp := Rule;
+                    AddJSONNumber(RuleProps, 'gap_mm', CoordToMMs(RuleDisp.Gap));
+                end;
 
                 // Add to rules array
                 RulesArray.Add(BuildJSONObject(RuleProps, 1));

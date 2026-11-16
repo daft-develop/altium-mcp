@@ -2584,7 +2584,16 @@ async def layout_duplicator_apply(ctx: Context, source_designators: list, destin
 async def get_pcb_rules(ctx: Context) -> str:
     """
     Get all design rules from the current Altium PCB
-    
+
+    Each rule has name, unique_id, descriptor, rule_kind, rule_kind_id,
+    filter1 and filter2. The Board Outline Clearance rule also has gap_mm.
+
+    Do not trust the descriptor text of a Board Outline Clearance rule: the
+    newer matrix-style rule keeps printing the legacy "Gap=0mm" label. Use
+    gap_mm, which is the rule's generic clearance. The per-object matrix
+    (arc/track/pad/... by edge type) is not exposed by the scripting API and
+    is not returned.
+
     Returns:
         str: JSON array of PCB design rules with their properties
     """

@@ -749,7 +749,16 @@ class AltiumScriptTest(unittest.TestCase):
             # Check the structure of the first rule
             rule = rules_data[0]
             self.assertIn("descriptor", rule, "Rule missing 'descriptor' field")
-            
+            for field in ("name", "unique_id", "rule_kind", "rule_kind_id"):
+                self.assertIn(field, rule, f"Rule missing '{field}' field")
+
+            # Board Outline Clearance reports its real gap, not the stale
+            # legacy "Gap=0mm" descriptor text
+            for r in rules_data:
+                if r.get("rule_kind") == "Board Outline Clearance":
+                    self.assertIn("gap_mm", r,
+                                  "Board Outline Clearance missing 'gap_mm'")
+
             # Display some of the rules found
             if verbosity_level >= VERBOSITY_DETAILED:
                 for i, rule in enumerate(rules_data[:5]):  # Show first 5 rules
